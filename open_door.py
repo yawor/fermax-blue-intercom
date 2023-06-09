@@ -1,3 +1,5 @@
+from typing import Optional, Dict
+
 import requests
 import json
 import logging
@@ -30,7 +32,7 @@ def update_cached_token(access_token: str, max_age: int):
         json.dump(cached_content, file)
 
 
-def read_cached_token() -> str:
+def read_cached_token() -> Optional[str]:
     try:
         with open(cache_file_path, 'r') as file:
             cached_content = json.load(file)
@@ -92,7 +94,7 @@ def auth(cache: bool, username: str, password: str) -> str:
     return access_token
 
 
-def get_json_headers(bearer_token: str) -> str:
+def get_json_headers(bearer_token: str) -> Dict[str, str]:
     headers = {'Authorization': bearer_token,
                'Content-Type': 'application/json'}
     headers.update(COMMON_HEADERS)
@@ -114,21 +116,21 @@ def pairings(bearer_token: str) -> tuple:
 
     pairing = parsed_json[0]
     tag = pairing['tag']
-    deviceId = pairing['deviceId']
-    accessDoorMap = pairing['accessDoorMap']
+    device_id = pairing['deviceId']
+    access_door_map = pairing['accessDoorMap']
 
-    accessIds = []
-    for d in accessDoorMap.values():
+    access_ids = []
+    for d in access_door_map.values():
         if d['visible']:
-            accessIds.append(d['accessId'])
+            access_ids.append(d['accessId'])
 
-    return (tag, deviceId, accessIds)
+    return tag, device_id, access_ids
 
 
-def directed_opendoor(bearer_token: str, deviceId: str, accessId: str) -> str:
-    directed_opendoor_url = f'https://blue.fermax.com/deviceaction/api/v1/device/{deviceId}/directed-opendoor'
+def directed_opendoor(bearer_token: str, device_id: str, access_id: str) -> str:
+    directed_opendoor_url = f'https://blue.fermax.com/deviceaction/api/v1/device/{device_id}/directed-opendoor'
 
-    payload = json.dumps(accessId)
+    payload = json.dumps(access_id)
 
     response = requests.request(
         'POST', directed_opendoor_url, headers=get_json_headers(bearer_token), data=payload)
@@ -136,7 +138,7 @@ def directed_opendoor(bearer_token: str, deviceId: str, accessId: str) -> str:
     return response.text
 
 
-def main():
+def main() -> None:
     # Input values
 
     parser = argparse.ArgumentParser()
@@ -157,18 +159,18 @@ def main():
 
     username = args.username
     password = args.password
-    deviceId = args.deviceId
-    accessIds = args.accessId
+    device_id = args.deviceId
+    access_ids = args.accessId
     cache = args.cache
     reauth = args.reauth
 
-    if (deviceId and not accessIds) or (accessIds and not deviceId):
+    if (device_id and not access_ids) or (access_ids and not device_id):
         raise Exception('Both deviceId and accessId must be provided')
 
-    provided_doors = deviceId and accessIds
+    provided_doors = device_id and access_ids
 
     if provided_doors:
-        accessIds = list(map(lambda accessId: json.loads(accessId), accessIds))
+        access_ids = [json.loads(access_id) for access_id in access_ids]
 
     # Program
 
@@ -187,26 +189,26 @@ def main():
     if not provided_doors:
         logging.info('Success, getting devices...')
 
-        tag, deviceId, accessIds = pairings(bearer_token)
+        tag, device_id, access_ids = pairings(bearer_token)
 
         logging.info(
-            f'Found {tag} with deviceId {deviceId} ({len(accessIds)} doors), calling directed opendoor...')
+            f'Found {tag} with deviceId {device_id} ({len(access_ids)} doors), calling directed opendoor...')
 
     else:
         logging.info(
-            f'Success, using provided deviceId {deviceId}, calling directed opendoor...')
+            f'Success, using provided deviceId {device_id}, calling directed opendoor...')
 
     if not reauth:
         # If user provided doors we open them all
         if provided_doors:
-            for accessId in accessIds:
-                result = directed_opendoor(bearer_token, deviceId, accessId)
+            for access_id in access_ids:
+                result = directed_opendoor(bearer_token, device_id, access_id)
                 logging.info(f'Result: {result}')
                 time.sleep(7)
 
         # Otherwise we just open the first one (ZERO?)
         else:
-            result = directed_opendoor(bearer_token, deviceId, accessIds[0])
+            result = directed_opendoor(bearer_token, device_id, access_ids[0])
             logging.info(f'Result: {result}')
 
 
