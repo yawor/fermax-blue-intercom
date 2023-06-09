@@ -8,40 +8,6 @@ import time
 
 from urllib.parse import quote
 
-
-# Input values
-
-parser = argparse.ArgumentParser()
-parser.add_argument('--username', type=str,
-                    help='Fermax Blue account username', required=True)
-parser.add_argument('--password', type=str,
-                    help='Fermax Blue account password', required=True)
-parser.add_argument('--deviceId', type=str,
-                    help='Optional deviceId to avoid extra fetching (requires accessId)')
-parser.add_argument('--accessId', type=str, nargs='+',
-                    help='Optional accessId(s) to avoid extra fetching (use with deviceId)')
-parser.add_argument('--cache', type=bool,
-                    help='Optionally set if cache is used to save/read auth token (enabled by default)', default=True)
-parser.add_argument('--reauth', action='store_true',
-                    help='Forces authentication (when using this option no door will be open)')
-args = parser.parse_args()
-
-username = args.username
-password = args.password
-deviceId = args.deviceId
-accessIds = args.accessId
-cache = args.cache
-reauth = args.reauth
-
-if (deviceId and not accessIds) or (accessIds and not deviceId):
-    raise Exception('Both deviceId and accessId must be provided')
-
-provided_doors = deviceId and accessIds
-
-if provided_doors:
-    accessIds = list(map(lambda accessId: json.loads(accessId), accessIds))
-
-
 CACHE_FILENAME = 'portal_cache.json'
 DATETIME_FORMAT = '%Y-%m-%d %H:%M:%S'
 
@@ -170,41 +136,79 @@ def directed_opendoor(bearer_token: str, deviceId: str, accessId: str) -> str:
     return response.text
 
 
-# Program
+def main():
+    # Input values
 
-access_token = None
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--username', type=str,
+                        help='Fermax Blue account username', required=True)
+    parser.add_argument('--password', type=str,
+                        help='Fermax Blue account password', required=True)
+    parser.add_argument('--deviceId', type=str,
+                        help='Optional deviceId to avoid extra fetching (requires accessId)')
+    parser.add_argument('--accessId', type=str, nargs='+',
+                        help='Optional accessId(s) to avoid extra fetching (use with deviceId)')
+    parser.add_argument('--cache', type=bool,
+                        help='Optionally set if cache is used to save/read auth token (enabled by default)',
+                        default=True)
+    parser.add_argument('--reauth', action='store_true',
+                        help='Forces authentication (when using this option no door will be open)')
+    args = parser.parse_args()
 
-if cache and not reauth:
-    access_token = read_cached_token()
+    username = args.username
+    password = args.password
+    deviceId = args.deviceId
+    accessIds = args.accessId
+    cache = args.cache
+    reauth = args.reauth
 
-if not access_token:
-    logging.info('Logging in into Blue...')
+    if (deviceId and not accessIds) or (accessIds and not deviceId):
+        raise Exception('Both deviceId and accessId must be provided')
 
-    access_token = auth(cache, username, password)
+    provided_doors = deviceId and accessIds
 
-bearer_token = f'Bearer {access_token}'
-
-if not provided_doors:
-    logging.info('Success, getting devices...')
-
-    tag, deviceId, accessIds = pairings(bearer_token)
-
-    logging.info(
-        f'Found {tag} with deviceId {deviceId} ({len(accessIds)} doors), calling directed opendoor...')
-
-else:
-    logging.info(
-        f'Success, using provided deviceId {deviceId}, calling directed opendoor...')
-
-if not reauth:
-    # If user provided doors we open them all
     if provided_doors:
-        for accessId in accessIds:
-            result = directed_opendoor(bearer_token, deviceId, accessId)
-            logging.info(f'Result: {result}')
-            time.sleep(7)
+        accessIds = list(map(lambda accessId: json.loads(accessId), accessIds))
 
-    # Otherwise we just open the first one (ZERO?)
+    # Program
+
+    access_token = None
+
+    if cache and not reauth:
+        access_token = read_cached_token()
+
+    if not access_token:
+        logging.info('Logging in into Blue...')
+
+        access_token = auth(cache, username, password)
+
+    bearer_token = f'Bearer {access_token}'
+
+    if not provided_doors:
+        logging.info('Success, getting devices...')
+
+        tag, deviceId, accessIds = pairings(bearer_token)
+
+        logging.info(
+            f'Found {tag} with deviceId {deviceId} ({len(accessIds)} doors), calling directed opendoor...')
+
     else:
-        result = directed_opendoor(bearer_token, deviceId, accessIds[0])
-        logging.info(f'Result: {result}')
+        logging.info(
+            f'Success, using provided deviceId {deviceId}, calling directed opendoor...')
+
+    if not reauth:
+        # If user provided doors we open them all
+        if provided_doors:
+            for accessId in accessIds:
+                result = directed_opendoor(bearer_token, deviceId, accessId)
+                logging.info(f'Result: {result}')
+                time.sleep(7)
+
+        # Otherwise we just open the first one (ZERO?)
+        else:
+            result = directed_opendoor(bearer_token, deviceId, accessIds[0])
+            logging.info(f'Result: {result}')
+
+
+if __name__ == "__main__":
+    main()
