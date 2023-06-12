@@ -4,7 +4,6 @@ import sys
 import datetime
 from weakref import WeakSet
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass
 from os import PathLike, fsdecode
 from pathlib import Path
 from types import TracebackType
@@ -22,6 +21,7 @@ from typing import (
     List,
     Any,
     Tuple,
+    cast,
 )
 
 import json
@@ -147,7 +147,7 @@ class FermaxBlueClient(AbstractAsyncContextManager):
     DEVICE_ID_RE = re.compile(r"^\w+$")
 
     def __init__(
-        self: TFermaxBlueClient, tokens_file_path: Union[str, bytes, PathLike]
+        self: TFermaxBlueClient, tokens_file_path: Optional[Union[str, bytes, PathLike]]
     ):
         """
         Creates a new instance of FermaxBlueClient.
@@ -225,6 +225,7 @@ class FermaxBlueClient(AbstractAsyncContextManager):
             raise ServerError(response.status_code, response.content)
 
     async def authenticate(self, username: str, password: str) -> None:
+        assert self._http_client is not None
         response = await self._http_client.post(
             self.OAUTH_URL,
             auth=self.OAUTH_AUTH,
@@ -238,6 +239,7 @@ class FermaxBlueClient(AbstractAsyncContextManager):
         self._parse_oauth_response(response)
 
     async def refresh_token(self) -> None:
+        assert self._http_client is not None
         if self.tokens is None:
             raise InvalidTokenError("Not authenticated")
 
@@ -261,7 +263,9 @@ class FermaxBlueClient(AbstractAsyncContextManager):
             await self.refresh_token()
 
     async def get_pairings(self, *, refresh_token: bool = True) -> List[Pairing]:
+        assert self._http_client is not None
         await self._ensure_fresh_token(refresh_token)
+        assert self.tokens is not None
 
         response = await self._http_client.get(
             f"{self.API_BASE_URL}/pairing/api/v3/pairings/me",
@@ -271,7 +275,7 @@ class FermaxBlueClient(AbstractAsyncContextManager):
         if response.is_success:
             return PairingsResponse.parse_raw(response.content).__root__
         elif response.is_error:
-            self._parse_error_response(response)
+            return self._parse_error_response(response)
         else:
             # TODO: Maybe unreachable?
             return []
@@ -279,10 +283,12 @@ class FermaxBlueClient(AbstractAsyncContextManager):
     async def open_door(
         self, device_id: str, access_id: AccessId, *, refresh_token: bool = True
     ) -> None:
+        assert self._http_client is not None
         if self.DEVICE_ID_RE.match(device_id) is None:
             raise InvalidDeviceId()
 
         await self._ensure_fresh_token(refresh_token)
+        assert self.tokens is not None
 
         response = await self._http_client.post(
             f"{self.API_BASE_URL}/deviceaction/api/v1/device/{device_id}/directed-opendoor",
@@ -338,15 +344,11 @@ def cli():
         )
         sys.exit(1)
 
-    @dataclass
-    class Column:
-        content: Any
-
     def format_columns(
         *rows: List[Any],
         start_padding: int = 0,
         column_padding: int = 1,
-        column_alignments: List[str] = None,
+        column_alignments: Optional[List[str]] = None,
     ) -> str:
         if not len(rows):
             return ""
@@ -378,13 +380,16 @@ def cli():
 
         return "\n".join(output_rows)
 
-    @dataclass
     class AppContext:
-        portal: Optional[anyio.from_thread.BlockingPortal] = None
-        client: Optional[FermaxBlueClient] = None
-        futures: Set[concurrent.futures.Future] = WeakSet()
+        def __init__(self) -> None:
+            self.portal: Optional[anyio.from_thread.BlockingPortal] = None
+            self.client: Optional[FermaxBlueClient] = None
+            self.futures: Set[concurrent.futures.Future] = cast(
+                Set[concurrent.futures.Future], WeakSet()
+            )
 
-        def call(self, func: "Callable[..., Awaitable[T] | T]", *args: object) -> T:
+        def call(self, func: "Callable[..., Awaitable[T]]", *args: object) -> T:
+            assert self.portal is not None
             fut = self.portal.start_task_soon(func, *args)
             self.futures.add(fut)
             try:
@@ -458,6 +463,9 @@ def cli():
         """
 
         app_ctx = ctx.find_object(AppContext)
+        assert app_ctx is not None
+        assert app_ctx.client is not None
+
         app_ctx.call(app_ctx.client.authenticate, username, password)
 
     @app.command()
@@ -476,6 +484,9 @@ def cli():
         """
 
         app_ctx = ctx.find_object(AppContext)
+        assert app_ctx is not None
+        assert app_ctx.client is not None
+
         if app_ctx.client.tokens is None:
             print("No tokens saved at the moment. You must first authenticate.")
             raise typer.Exit(1)
@@ -494,10 +505,13 @@ def cli():
         """
 
         app_ctx = ctx.find_object(AppContext)
+        assert app_ctx is not None
+        assert app_ctx.client is not None
+
         pairings_ = app_ctx.call(app_ctx.client.get_pairings)
 
         print("Pairings:")
-        for pairing in pairings_ * 2:
+        for pairing in pairings_:
             print()
             print(
                 format_columns(
@@ -510,7 +524,9 @@ def cli():
                     start_padding=2,
                 )
             )
-            doors = [["ID:", "Title:", "Block:", "SubBlock:", "Number:", "Visible:"]]
+            doors: List[Any] = [
+                ["ID:", "Title:", "Block:", "SubBlock:", "Number:", "Visible:"]
+            ]
             for door_id, door in pairing.access_door_map.items():
                 doors.append(
                     [
@@ -532,6 +548,8 @@ def cli():
                 )
             )
 
+    access_id_sentinel_value = (-9999, -9999, -9999)
+
     @app.command()
     def open_door(
         ctx: typer.Context,
@@ -548,23 +566,26 @@ def cli():
             Tuple[int, int, int],
             typer.Option(
                 metavar="<BLOCK SUBBLOCK NUMBER>",
+                show_default=False,
                 help="Access ID of a door to open. If not specified, a request to get pairings is made"
                 " and first visible door for selected device id is selected."
                 " It consists of 3 numbers: Block, SubBlock and Number,"
                 " which can be found by executing pairings command."
                 " If access id is given, device id also must be provided.",
             ),
-        ] = (None, None, None),
+        ] = access_id_sentinel_value,
     ):
         """
         Opens door according to specified parameters.
         """
 
-        has_access_id = all(x is not None for x in access_id)
+        has_access_id = access_id != access_id_sentinel_value
         if has_access_id and not device_id:
             raise ClickException("Option --device-id is required if --access-id is set")
 
         app_ctx = ctx.find_object(AppContext)
+        assert app_ctx is not None
+        assert app_ctx.client is not None
 
         if not device_id or not has_access_id:
             pairings_ = app_ctx.call(app_ctx.client.get_pairings)
@@ -578,20 +599,20 @@ def cli():
                     raise ClickException("No pairings found")
                 device_id = pairing.device_id
 
-            access_id = next(
+            access_id_ = next(
                 (x.access_id for x in pairing.access_door_map.values() if x.visible),
                 None,
             )
-            if not access_id:
+            if not access_id_:
                 raise ClickException(
                     f"Couldn't find visible access door for device id {device_id}"
                 )
         else:
-            access_id = AccessId(
+            access_id_ = AccessId(
                 block=access_id[0], subblock=access_id[1], number=access_id[2]
             )
 
-        app_ctx.call(app_ctx.client.open_door, device_id, access_id)
+        app_ctx.call(app_ctx.client.open_door, device_id, access_id_)
 
     app()
 
